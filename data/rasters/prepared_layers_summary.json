@@ -1,0 +1,19 @@
+{
+  "aoi_place": "Lagos, Nigeria",
+  "bbox": [
+    2.6859846,
+    6.346684000000001,
+    4.3709055999999995,
+    6.7167964
+  ],
+  "grid_res_deg": 0.001,
+  "fishnet_cell_deg": 0.01,
+  "soil_res_m": 250,
+  "outputs": {
+    "dist_to_river_m": "data/rasters/dist_to_river_m.tif",
+    "lulc_osm_proxy": "data/rasters/lulc_osm_proxy.tif",
+    "drainage_density_km_per_km2": "data/rasters/drainage_density_km_per_km2.tif",
+    "soil_sand_pct": "data/rasters/soil_sand_pct.tif",
+    "flood_risk_0to1": "data/rasters/flood_risk_0to1.tif"
+  }
+}

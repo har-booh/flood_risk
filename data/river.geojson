@@ -1,0 +1,1 @@
+{"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[3.3, 6.608], [3.36, 6.6], [3.42, 6.592]]}, "properties": {"name": "synthetic_river"}}]}

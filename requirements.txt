@@ -1,0 +1,22 @@
+numpy>=1.23
+pandas>=1.5
+pyyaml>=6.0
+matplotlib>=3.7
+streamlit>=1.30
+pydeck>=0.8
+requests>=2.31
+# Optional, only if you use --source chirps-gee:
+earthengine-api>=0.1.394
+u8darts>=0.30
+torch>=2.0
+pytorch-lightning>=2.0
+geopandas>=1.1 
+shapely>=2.1.2
+rasterio>=1.4.3 
+osmnx>=2.0.6 
+requests>=2.32.5
+numpy>=2.3.4 
+scipy>=1.16.3 
+pyproj>=3.7.2
+rtree>=1.4.1
+streamlit_folium>=0.25.3
