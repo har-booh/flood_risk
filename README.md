@@ -12,7 +12,8 @@
 - clone repo
 - chmod +x setup.sh
 - ./setup.sh
-- python3 fetch_meteorology.py --start 2023-01-01 --end 2024-12-31 (to get metrology data)
+- source venv/bin/activate
+- python3 fetch_metrology.py --start 2023-01-01 --end 2024-12-31 (to get metrology data)
 - python3 fetch_physical.py (to get physical data. might take a while)
 - python3 flood_demo_modular_Stable.py (to run flood estimation pipeline and get output rasters)
 - streamlit run streamlit_flood_viewer.py
