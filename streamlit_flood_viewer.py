@@ -16,6 +16,19 @@ from streamlit_folium import st_folium
 import folium
 from flood_demo_modular_stable import run as recompute_flood_risk
 from branca.element import Element
+import pandas as pd
+import requests
+import hashlib
+import time
+from pathlib import Path
+
+try:
+    from scipy.spatial import cKDTree as KDTree
+except Exception:
+    KDTree = None
+
+# Contact email used for Nominatim per their usage policy
+NOMINATIM_CONTACT_EMAIL = "axumaicollective@gmail.com"
 
 st.set_page_config(page_title="Flood Risk Viewer", layout="wide")
 
@@ -127,8 +140,193 @@ def add_onmap_legend(map_obj, img_bytes: bytes, position: str = "bottomright", z
     html = f'<div style="{style} z-index:{zindex}; background: rgba(255,255,255,0.8); padding:6px; border-radius:6px; box-shadow: 0 1px 4px rgba(0,0,0,0.25);"><img src="data:image/png;base64,{b64}" style="width:{width_px}px; height:auto;" /></div>'
     map_obj.get_root().html.add_child(Element(html))
 
+# ---- Location search helpers (lat/lon parse, geocode, nearest-grid, raster sampler)
+
+_GRID_CACHE = {}
+_KD = None
+_GRID_COORDS = None
+
+def parse_latlon(text: str):
+    if not isinstance(text, str):
+        return None
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 2:
+        return None
+    try:
+        lat = float(parts[0])
+        lon = float(parts[1])
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return lat, lon
+    except Exception:
+        return None
+    return None
+
+def load_grid_cells(path: str = "data/grid_cells.csv"):
+    global _GRID_CACHE, _KD, _GRID_COORDS
+    if path in _GRID_CACHE:
+        return _GRID_CACHE[path]
+    p = Path(path)
+    if not p.exists():
+        _GRID_CACHE[path] = None
+        return None
+    df = pd.read_csv(p)
+    coords = np.vstack([df['lat'].values, df['lon'].values]).T
+    _GRID_COORDS = coords
+    if KDTree is not None:
+        try:
+            _KD = KDTree(coords)
+        except Exception:
+            _KD = None
+    else:
+        _KD = None
+    _GRID_CACHE[path] = (df, _KD, coords)
+    return _GRID_CACHE[path]
+
+def nearest_grid_point(lat: float, lon: float, grid_path: str = "data/grid_cells.csv"):
+    loaded = load_grid_cells(grid_path)
+    if not loaded:
+        return None
+    df, kd, coords = loaded
+    if kd is not None:
+        dist, idx = kd.query([lat, lon], k=1)
+        row = df.iloc[int(idx)].to_dict()
+        row['__nn_dist_deg'] = float(dist)
+        return row
+    # fallback brute-force (euclidean degrees)
+    d = np.sqrt((coords[:,0] - lat)**2 + (coords[:,1] - lon)**2)
+    idx = int(np.argmin(d))
+    row = df.iloc[idx].to_dict()
+    row['__nn_dist_deg'] = float(d[idx])
+    return row
+
+def geocode_nominatim(query: str, limit: int = 6, user_agent_email: str = None):
+    q = query.strip()
+    if q == "":
+        return []
+    if user_agent_email is None:
+        user_agent_email = NOMINATIM_CONTACT_EMAIL
+    cache_dir = Path("cache")
+    cache_dir.mkdir(exist_ok=True)
+    key = hashlib.sha256(q.encode("utf-8")).hexdigest()
+    cache_file = cache_dir / f"geocode_{key}.json"
+    if cache_file.exists():
+        try:
+            return json.loads(cache_file.read_text())
+        except Exception:
+            try:
+                cache_file.unlink()
+            except Exception:
+                pass
+    url = "https://nominatim.openstreetmap.org/search"
+    headers = {
+        "User-Agent": f"flood-risk-viewer ({user_agent_email})",
+        "Accept": "application/json",
+        "Referer": "http://localhost/",
+    }
+    params = {"q": q, "format": "json", "limit": limit}
+    try:
+        time.sleep(0.5)
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        # If blocked or forbidden, attempt a gentler fallback UA to see if it's a UA-block
+        if resp.status_code == 403 or (isinstance(resp.text, str) and 'Access blocked' in resp.text):
+            # fallback to a permissive curl UA (not ideal long-term — set a real contact email to avoid blocks)
+            headers_fb = {**headers, 'User-Agent': 'curl/8.7.1'}
+            try:
+                resp = requests.get(url, headers=headers_fb, params=params, timeout=10)
+            except Exception:
+                pass
+        resp.raise_for_status()
+        data = resp.json()
+        # normalize lat/lon to floats and small dict keys
+        out = []
+        for r in data:
+            try:
+                lat = float(r.get('lat'))
+                lon = float(r.get('lon'))
+                display = r.get('display_name') or r.get('name') or q
+                out.append({'name': display, 'lat': lat, 'lon': lon, 'raw': r})
+            except Exception:
+                continue
+        try:
+            cache_file.write_text(json.dumps(out))
+        except Exception:
+            pass
+        return out
+    except Exception:
+        return []
+
+def sample_raster_at_point(path: str, lat: float, lon: float):
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        with rasterio.open(str(p)) as src:
+            try:
+                row, col = src.index(lon, lat)
+                arr = src.read(1)
+                if 0 <= row < arr.shape[0] and 0 <= col < arr.shape[1]:
+                    val = float(arr[row, col])
+                    if src.nodata is not None and np.isclose(val, src.nodata):
+                        return None
+                    if not np.isfinite(val):
+                        return None
+                    return val
+            except Exception:
+                # try sampling as fallback
+                for val in rasterio.sample.sample_gen(src, [(lon, lat)]):
+                    v = val[0]
+                    if np.isfinite(v):
+                        return float(v)
+    except Exception:
+        return None
+    return None
+
 # ---------------- Sidebar ----------------
 
+# ---------------- Location search (top of sidebar)
+st.sidebar.subheader("Location search")
+st.sidebar.write("Enter an address/place name or `lat, lon` (decimal degrees).")
+# define the search action before widgets reference it
+def _do_loc_search():
+    q = st.session_state.get('loc_search_input', '').strip()
+    if not q:
+        st.session_state['loc_message'] = 'Enter a search query.'
+        return
+    parsed = parse_latlon(q)
+    if parsed:
+        lat, lon = parsed
+        st.session_state['selected_location'] = {'name': f'{lat:.6f}, {lon:.6f}', 'lat': lat, 'lon': lon}
+        st.session_state['loc_candidates'] = []
+        st.session_state['loc_message'] = f'Parsed coordinates: {lat:.6f}, {lon:.6f}'
+        return
+    if st.session_state.get('loc_use_geocode', True):
+        res = geocode_nominatim(q)
+        st.session_state['loc_candidates'] = res
+        if res:
+            st.session_state['selected_location'] = {'name': res[0]['name'], 'lat': res[0]['lat'], 'lon': res[0]['lon']}
+            st.session_state['loc_message'] = f'Found {len(res)} candidate(s). Selected the first.'
+        else:
+            st.session_state['loc_message'] = 'No geocoding results.'
+    else:
+        st.session_state['loc_message'] = 'Geocoding disabled and input is not lat,lon.'
+# text input (user types, then clicks Search)
+loc_query = st.sidebar.text_input('Search by address or "lat, lon"', placeholder='e.g., Lagos or 6.4285, 3.4795', key='loc_search_input')
+use_geocode = st.sidebar.checkbox('Use geocoding (Nominatim)', value=True, key='loc_use_geocode')
+st.sidebar.button('Search', on_click=_do_loc_search, key='loc_btn_go')
+
+if st.session_state.get('loc_candidates'):
+    candidates = st.session_state['loc_candidates']
+    labels = [f"{c['name']} ({c['lat']:.6f}, {c['lon']:.6f})" for c in candidates]
+    sel_idx = st.sidebar.selectbox('Choose candidate', list(range(len(labels))), format_func=lambda i: labels[i], key='loc_candidate_sel')
+    sel = candidates[sel_idx]
+    st.session_state['selected_location'] = {'name': sel['name'], 'lat': sel['lat'], 'lon': sel['lon']}
+
+if 'loc_message' in st.session_state:
+    st.sidebar.write(st.session_state.get('loc_message'))
+
+st.sidebar.divider()
+
+# ---------------- Layer controls... ----------------
 st.sidebar.title("Layers")
 summary_path = st.sidebar.text_input("Summary JSON path", value="data/rasters/prepared_layers_summary.json", key="summary_path_input")
 if not os.path.exists(summary_path):
@@ -196,6 +394,9 @@ show_soil = st.sidebar.checkbox("Soil sand fraction (%)", value=False, key="togg
 show_lulc = st.sidebar.checkbox("LULC (worldcover proxy)", value=False, key="toggle_lulc")
 
 
+
+
+
 # --------------- Map Build ----------------
 
 bbox = meta["bbox"]
@@ -243,6 +444,41 @@ if show_lulc and "lulc_worldcover_proxy" in paths and os.path.exists(paths["lulc
     img, _ = raster_to_rgba_image(p, cmap_name=CMAPS["lulc_worldcover_proxy"])
     add_image_overlay(m, img, raster_bounds_latlon(p), "LULC (worldcover proxy)", opacity=overlay_opacity)
     add_onmap_legend(m, make_lulc_legend_png(), position=next_pos())
+
+# Add a marker for any user-selected location and sample nearby values
+sel = st.session_state.get('selected_location') if 'selected_location' in st.session_state else None
+if sel:
+    try:
+        lat = float(sel['lat'])
+        lon = float(sel['lon'])
+        name = sel.get('name', f"{lat:.6f}, {lon:.6f}")
+        popup_html = f"<b>{name}</b><br/>{lat:.6f}, {lon:.6f}"
+        # sample flood risk raster if available
+        if 'flood_risk_0to1' in paths and os.path.exists(paths['flood_risk_0to1']):
+            v = sample_raster_at_point(paths['flood_risk_0to1'], lat, lon)
+            if v is not None:
+                popup_html += f"<br/>Flood risk: {v:.3f}"
+        # nearest grid info
+        nn = nearest_grid_point(lat, lon)
+        if nn is not None:
+            nn_info = []
+            if 'row' in nn and 'col' in nn:
+                nn_info.append(f"r{nn.get('row')},c{nn.get('col')}")
+            if 'LULC' in nn:
+                nn_info.append(f"LULC:{nn.get('LULC')}")
+            if 'DistRiver_m' in nn:
+                nn_info.append(f"DistRiver_m:{nn.get('DistRiver_m')}")
+            if nn_info:
+                popup_html += "<br/>Nearest grid: " + ", ".join(nn_info)
+        folium.Marker([lat, lon], popup=folium.Popup(popup_html, max_width=300), icon=folium.Icon(color='red', icon='map-marker')).add_to(m)
+        # recenter map
+        try:
+            m.location = [lat, lon]
+            m.zoom_start = 14
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 folium.LayerControl(collapsed=False).add_to(m)
 st_folium(m, use_container_width=True, returned_objects=[])
