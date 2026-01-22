@@ -95,14 +95,14 @@ def add_image_overlay(m, img_rgba: np.ndarray, bounds, name: str, opacity: float
     )
     overlay.add_to(m)
 
-def make_continuous_legend_png(cmap_name: str, vmin: float, vmax: float, title: str, width_px=260) -> bytes:
-    fig, ax = plt.subplots(figsize=(3.2, 1.0), dpi=200)
+def make_continuous_legend_png(cmap_name: str, vmin: float, vmax: float, title: str, width_px=360) -> bytes:
+    fig, ax = plt.subplots(figsize=(5.0, 1.4), dpi=200)
     fig.subplots_adjust(bottom=0.35, top=0.85, left=0.08, right=0.98)
     cmap = matplotlib.colormaps.get_cmap(cmap_name)
     norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
     cb = matplotlib.colorbar.ColorbarBase(ax, cmap=cmap, norm=norm, orientation="horizontal")
-    ax.set_title(title, fontsize=8)
-    cb.ax.tick_params(labelsize=7)
+    ax.set_title(title, fontsize=10, fontweight='bold')
+    cb.ax.tick_params(labelsize=9)
     bio = BytesIO()
     fig.savefig(bio, format="png", dpi=200, bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
@@ -114,30 +114,30 @@ def make_continuous_legend_png(cmap_name: str, vmin: float, vmax: float, title: 
 
 LULC_CLASSES = [(1,"Water"),(2,"Urban / Impervious"),(3,"Vegetation"),(4,"Agriculture"),(5,"Wetland"),(6,"Other")]
 
-def make_lulc_legend_png(width_px=240) -> bytes:
+def make_lulc_legend_png(width_px=340) -> bytes:
     palette = matplotlib.colormaps.get_cmap("tab10")
-    row_h = 24
-    img_h = row_h * len(LULC_CLASSES) + 16
+    row_h = 36
+    img_h = row_h * len(LULC_CLASSES) + 24
     img = Image.new("RGBA", (width_px, img_h), (255, 255, 255, 220))
     draw = ImageDraw.Draw(img)
-    x0, y = 10, 8; sw = 18
+    x0, y = 12, 12; sw = 28
     for code, label in LULC_CLASSES:
         color = tuple(int(c * 255) for c in palette((code - 1) % 10)[:3]) + (255,)
-        draw.rectangle([x0, y + 3, x0 + sw, y + 3 + sw], fill=color, outline=(40,40,40,255))
-        draw.text((x0 + sw + 10, y + 2), f"{code} — {label}", fill=(10,10,10,255))
+        draw.rectangle([x0, y + 4, x0 + sw, y + 4 + sw], fill=color, outline=(40,40,40,255))
+        draw.text((x0 + sw + 14, y + 5), f"{code} — {label}", fill=(10,10,10,255), font=None)
         y += row_h
     bio = BytesIO(); img.save(bio, format="PNG"); return bio.getvalue()
 
-def add_onmap_legend(map_obj, img_bytes: bytes, position: str = "bottomright", zindex: int = 1000, width_px: int = 200):
+def add_onmap_legend(map_obj, img_bytes: bytes, position: str = "bottomright", zindex: int = 1000, width_px: int = 300):
     b64 = base64.b64encode(img_bytes).decode("ascii")
     style_by_pos = {
-        "bottomright": "position:absolute; bottom:10px; right:10px;",
-        "bottomleft":  "position:absolute; bottom:10px; left:10px;",
-        "topright":    "position:absolute; top:10px; right:10px;",
-        "topleft":     "position:absolute; top:10px; left:10px;",
+        "bottomright": "position:absolute; bottom:15px; right:15px;",
+        "bottomleft":  "position:absolute; bottom:15px; left:15px;",
+        "topright":    "position:absolute; top:15px; right:15px;",
+        "topleft":     "position:absolute; top:15px; left:15px;",
     }
     style = style_by_pos.get(position, style_by_pos["bottomright"])
-    html = f'<div style="{style} z-index:{zindex}; background: rgba(255,255,255,0.8); padding:6px; border-radius:6px; box-shadow: 0 1px 4px rgba(0,0,0,0.25);"><img src="data:image/png;base64,{b64}" style="width:{width_px}px; height:auto;" /></div>'
+    html = f'<div style="{style} z-index:{zindex}; background: rgba(255,255,255,0.85); padding:10px; border-radius:8px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);"><img src="data:image/png;base64,{b64}" style="width:{width_px}px; height:auto;" /></div>'
     map_obj.get_root().html.add_child(Element(html))
 
 # ---- Location search helpers (lat/lon parse, geocode, nearest-grid, raster sampler)
@@ -336,6 +336,12 @@ if not os.path.exists(summary_path):
 meta = read_summary(summary_path)
 paths = meta["outputs"]
 
+# Ensure flood_risk_0to1 is in outputs (fallback if not added by flood_demo_modular_stable.py yet)
+summary_dir = os.path.dirname(os.path.abspath(summary_path))
+flood_risk_path = os.path.join(summary_dir, "flood_risk_0to1.tif")
+if "flood_risk_0to1" not in paths and os.path.exists(flood_risk_path):
+    paths["flood_risk_0to1"] = flood_risk_path
+
 # Fixed cmaps
 CMAPS = {
     "flood_risk_0to1": "viridis",
@@ -485,3 +491,11 @@ st_folium(m, use_container_width=True, returned_objects=[])
 
 with st.expander("AOI details"):
     st.write({"aoi_place": meta.get("aoi_place", "<unknown>"), "bbox": bbox})
+
+with st.expander("Debug: Available layers"):
+    st.write("**Paths available:**")
+    for key, path in paths.items():
+        exists = os.path.exists(path)
+        st.write(f"  {key}: {path} {'✓' if exists else '✗ (missing)'}")
+    st.write("**Summary metadata:**")
+    st.json({"aoi_place": meta.get("aoi_place"), "bbox": meta.get("bbox"), "flood_risk_weights_used": meta.get("flood_risk_weights_used", {})})
